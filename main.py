@@ -20,6 +20,8 @@ from datetime import datetime
 import requests
 import time
 import json
+from flask import Flask
+import threading
 
 # ==================== CONFIGURATION ====================
 
@@ -77,9 +79,9 @@ LOG_FILE = "./submissions_log.txt"
 # MAX_PHOTOS = 150
 
 # Image compression settings
-MAX_IMAGE_SIZE_MB = 2  # Compress images larger than 2MB
-COMPRESSION_QUALITY = 85  # Quality: 1-100 (85 is good balance)
-MAX_IMAGE_DIMENSION = 2048  # Max width/height in pixels
+MAX_IMAGE_SIZE_MB = 2
+COMPRESSION_QUALITY = 85
+MAX_IMAGE_DIMENSION = 2048
 
 # ==================== SETUP ====================
 
@@ -174,21 +176,11 @@ def compress_image(image_path, max_size_mb=2, quality=85, max_dimension=2048):
 def create_pdf_from_images(image_files, output_pdf_path, bot, chat_id, site_id, page_size=A4):
     writer = PdfWriter()
     total_images = len(image_files)
-    progress_msg = bot.send_message(chat_id, 
-        f"📊 <b>Progress for Site {site_id}</b>\n\n"
-        f"🔄 Compressing images...\n"
-        f"Progress: 0/{total_images}")
+    progress_msg = bot.send_message(chat_id, f"📊 <b>Progress for Site {site_id}</b>\n\nProgress: 0/{total_images}")
     message_id = progress_msg['result']['message_id']
 
     for i, img_path in enumerate(image_files, 1):
         compress_image(img_path, MAX_IMAGE_SIZE_MB, COMPRESSION_QUALITY, MAX_IMAGE_DIMENSION)
-        if i % 5 == 0 or i == total_images:
-            bot.edit_message(chat_id, message_id,
-                f"📊 <b>Progress for Site {site_id}</b>\n\n"
-                f"🔄 Creating PDF pages...\n"
-                f"Progress: {i}/{total_images}")
-
-    for i, img_path in enumerate(image_files, 1):
         packet = BytesIO()
         can = canvas.Canvas(packet, pagesize=page_size)
         page_width, page_height = page_size
@@ -205,6 +197,8 @@ def create_pdf_from_images(image_files, output_pdf_path, bot, chat_id, site_id, 
         from pypdf import PdfReader
         temp_pdf = PdfReader(packet)
         writer.add_page(temp_pdf.pages[0])
+        if i % 5 == 0 or i == total_images:
+            bot.edit_message(chat_id, message_id, f"📊 <b>Progress for Site {site_id}</b>\n\nProgress: {i}/{total_images}")
 
     with open(output_pdf_path, "wb") as f:
         writer.write(f)
@@ -248,17 +242,14 @@ def log_submission(site_id, photo_count, status):
 
 def process_site(bot, chat_id, site_id, photo_files):
     photo_count = len(photo_files)
-    bot.send_message(chat_id, f"🚀 <b>Starting Processing</b>\n\n📋 Site ID: {site_id}\n📸 Total Photos: {photo_count}\n\nPlease wait...")
+    bot.send_message(chat_id, f"🚀 <b>Starting Processing</b>\n\n📋 Site ID: {site_id}\n📸 Total Photos: {photo_count}")
     pdf_path = os.path.join(PDF_OUTPUT_DIR, f"{site_id}.pdf")
     success, progress_msg_id, pdf_size_mb = create_pdf_from_images(photo_files, pdf_path, bot, chat_id, site_id)
     subject = EMAIL_SUBJECT.format(site_id=site_id)
     body = EMAIL_BODY.format(site_id=site_id)
 
     if send_email_with_attachment(RECIPIENTS, subject, body, pdf_path):
-        bot.edit_message(chat_id, progress_msg_id,
-            f"📊 <b>Progress for Site {site_id}</b>\n\n"
-            f"✅ PDF Created: {photo_count} pages ({pdf_size_mb:.2f}MB)\n"
-            f"✅ Email Sent: {len(RECIPIENTS)} recipients\n\n<b>COMPLETED!</b>")
+        bot.edit_message(chat_id, progress_msg_id, f"✅ Completed: {photo_count} photos | PDF {pdf_size_mb:.2f}MB | Email sent")
         bot.send_document(chat_id, pdf_path, f"PDF for Site {site_id}")
         log_submission(site_id, photo_count, "Success")
         archive_path = os.path.join(ARCHIVE_DIR, site_id)
@@ -310,5 +301,15 @@ def main():
             logging.error(f"Bot error: {str(e)}")
             time.sleep(5)
 
+# ==================== FLASK WRAPPER FOR RENDER ====================
+
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "JV Telegram Bot is Live"
+
 if __name__ == "__main__":
-    main()
+    t = threading.Thread(target=main, daemon=True)
+    t.start()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
